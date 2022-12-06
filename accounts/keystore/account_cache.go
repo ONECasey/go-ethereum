@@ -27,10 +27,12 @@ import (
 	"sync"
 	"time"
 
-	mapset "github.com/deckarep/golang-set/v2"
-	"github.com/ethereum/go-ethereum/accounts"
+	mapset "github.com/deckarep/golang-set"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/log"
+
+	"github.com/harmony-one/harmony/accounts"
+	common2 "github.com/harmony-one/harmony/internal/common"
+	"github.com/harmony-one/harmony/internal/utils"
 )
 
 // Minimum amount of time between cache reloads. This limit applies if the platform does
@@ -79,7 +81,7 @@ func newAccountCache(keydir string) (*accountCache, chan struct{}) {
 		keydir: keydir,
 		byAddr: make(map[common.Address][]accounts.Account),
 		notify: make(chan struct{}, 1),
-		fileC:  fileCache{all: mapset.NewThreadUnsafeSet[string]()},
+		fileC:  fileCache{all: mapset.NewThreadUnsafeSet()},
 	}
 	ac.watcher = newWatcher(ac)
 	return ac, ac.notify
@@ -144,14 +146,6 @@ func (ac *accountCache) deleteByFile(path string) {
 			ac.byAddr[removed.Address] = ba
 		}
 	}
-}
-
-// watcherStarted returns true if the watcher loop started running (even if it
-// has since also ended).
-func (ac *accountCache) watcherStarted() bool {
-	ac.mu.Lock()
-	defer ac.mu.Unlock()
-	return ac.watcher.running || ac.watcher.runEnded
 }
 
 func removeAccount(slice []accounts.Account, elem accounts.Account) []accounts.Account {
@@ -242,7 +236,7 @@ func (ac *accountCache) scanAccounts() error {
 	// Scan the entire folder metadata for file changes
 	creates, deletes, updates, err := ac.fileC.scan(ac.keydir)
 	if err != nil {
-		log.Debug("Failed to reload keystore contents", "err", err)
+		utils.Logger().Debug().Err(err).Msg("Failed to reload keystore contents")
 		return err
 	}
 	if creates.Cardinality() == 0 && deletes.Cardinality() == 0 && updates.Cardinality() == 0 {
@@ -258,7 +252,10 @@ func (ac *accountCache) scanAccounts() error {
 	readAccount := func(path string) *accounts.Account {
 		fd, err := os.Open(path)
 		if err != nil {
-			log.Trace("Failed to open keystore file", "path", path, "err", err)
+			utils.Logger().Debug().
+				Str("path", path).
+				Err(err).
+				Msg("Failed to open keystore file")
 			return nil
 		}
 		defer fd.Close()
@@ -266,12 +263,18 @@ func (ac *accountCache) scanAccounts() error {
 		// Parse the address.
 		key.Address = ""
 		err = json.NewDecoder(buf).Decode(&key)
-		addr := common.HexToAddress(key.Address)
+		addr, _ := common2.ParseAddr(key.Address)
 		switch {
 		case err != nil:
-			log.Debug("Failed to decode keystore key", "path", path, "err", err)
-		case addr == common.Address{}:
-			log.Debug("Failed to decode keystore key", "path", path, "err", "missing or zero address")
+			utils.Logger().Debug().
+				Str("path", path).
+				Err(err).
+				Msg("Failed to decode keystore key")
+		case (addr == common.Address{}):
+			utils.Logger().Debug().
+				Str("path", path).
+				Err(err).
+				Msg("Failed to decode keystore key, missing or zero address")
 		default:
 			return &accounts.Account{
 				Address: addr,
@@ -283,15 +286,16 @@ func (ac *accountCache) scanAccounts() error {
 	// Process all the file diffs
 	start := time.Now()
 
-	for _, path := range creates.ToSlice() {
-		if a := readAccount(path); a != nil {
+	for _, p := range creates.ToSlice() {
+		if a := readAccount(p.(string)); a != nil {
 			ac.add(*a)
 		}
 	}
-	for _, path := range deletes.ToSlice() {
-		ac.deleteByFile(path)
+	for _, p := range deletes.ToSlice() {
+		ac.deleteByFile(p.(string))
 	}
-	for _, path := range updates.ToSlice() {
+	for _, p := range updates.ToSlice() {
+		path := p.(string)
 		ac.deleteByFile(path)
 		if a := readAccount(path); a != nil {
 			ac.add(*a)
@@ -303,6 +307,6 @@ func (ac *accountCache) scanAccounts() error {
 	case ac.notify <- struct{}{}:
 	default:
 	}
-	log.Trace("Handled keystore changes", "time", end.Sub(start))
+	utils.Logger().Debug().Uint64("time", uint64(end.Sub(start))).Msg("Handled keystore changes")
 	return nil
 }

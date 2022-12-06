@@ -1,50 +1,221 @@
-// Copyright 2020 The go-ethereum Authors
-// This file is part of the go-ethereum library.
-//
-// The go-ethereum library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// The go-ethereum library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public License
-// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
-
 package rpc
 
 import (
-	"fmt"
-	"time"
-
-	"github.com/ethereum/go-ethereum/metrics"
+	prom "github.com/harmony-one/harmony/api/service/prometheus"
+	"github.com/prometheus/client_golang/prometheus"
 )
+
+// rpc name const
+const (
+	// blockchain
+	GetBlockByNumberNew      = "GetBlockByNumberNew"
+	GetBlockByNumber         = "GetBlockByNumber"
+	GetBlockByHashNew        = "GetBlockByHashNew"
+	GetBlockByHash           = "GetBlockByHash"
+	GetBlocks                = "GetBlocks"
+	IsLastBlock              = "IsLastBlock"
+	EpochLastBlock           = "EpochLastBlock"
+	GetBlockSigners          = "GetBlockSigners"
+	GetBlockReceipts         = "GetBlockReceipts"
+	GetBlockSignerKeys       = "GetBlockSignerKeys"
+	IsBlockSigner            = "IsBlockSigner"
+	GetSignedBlocks          = "GetSignedBlocks"
+	GetEpoch                 = "GetEpoch"
+	GetLeader                = "GetLeader"
+	GetShardingStructure     = "GetShardingStructure"
+	GetBalanceByBlockNumber  = "GetBalanceByBlockNumber"
+	LatestHeader             = "LatestHeader"
+	GetLatestChainHeaders    = "GetLatestChainHeaders"
+	GetLastCrossLinks        = "GetLastCrossLinks"
+	GetHeaderByNumber        = "GetHeaderByNumber"
+	GetHeaderByNumberRLPHex  = "GetHeaderByNumberRLPHex"
+	GetProof                 = "GetProof"
+	GetCurrentUtilityMetrics = "GetCurrentUtilityMetrics"
+	GetSuperCommittees       = "GetSuperCommittees"
+	GetCurrentBadBlocks      = "GetCurrentBadBlocks"
+	GetTotalSupply           = "GetTotalSupply"
+	GetCirculatingSupply     = "GetCirculatingSupply"
+	GetStakingNetworkInfo    = "GetStakingNetworkInfo"
+	InSync                   = "InSync"
+	BeaconInSync             = "BeaconInSync"
+	SetNodeToBackupMode      = "SetNodeToBackupMode"
+
+	// contract
+	GetCode      = "GetCode"
+	GetStorageAt = "GetStorageAt"
+	Call         = "Call"
+	DoEvmCall    = "DoEVMCall"
+
+	// net
+	PeerCount  = "PeerCount"
+	NetVersion = "Version"
+
+	// pool
+	SendRawTransaction             = "SendRawTransaction"
+	SendRawStakingTransaction      = "SendRawStakingTransaction"
+	GetPoolStats                   = "GetPoolStats"
+	PendingTransactions            = "PendingTransactions"
+	PendingStakingTransactions     = "PendingStakingTransactions"
+	GetCurrentTransactionErrorSink = "GetCurrentTransactionErrorSink"
+	GetCurrentStakingErrorSink     = "GetCurrentStakingErrorSink"
+	GetPendingCXReceipts           = "GetPendingCXReceipts"
+
+	// staking
+	GetTotalStaking                         = "GetTotalStaking"
+	GetMedianRawStakeSnapshot               = "GetMedianRawStakeSnapshot"
+	GetElectedValidatorAddresses            = "GetElectedValidatorAddresses"
+	GetValidators                           = "GetValidators"
+	GetAllValidatorAddresses                = "GetAllValidatorAddresses"
+	GetValidatorKeys                        = "GetValidatorKeys"
+	GetAllValidatorInformation              = "GetAllValidatorInformation"
+	GetAllValidatorInformationByBlockNumber = "GetAllValidatorInformationByBlockNumber"
+	GetValidatorInformation                 = "GetValidatorInformation"
+	GetValidatorInformationByBlockNumber    = "GetValidatorInformationByBlockNumber"
+	GetValidatorsStakeByBlockNumber         = "GetValidatorsStakeByBlockNumber"
+	GetValidatorSelfDelegation              = "GetValidatorSelfDelegation"
+	GetValidatorTotalDelegation             = "GetValidatorTotalDelegation"
+	GetAllDelegationInformation             = "GetAllDelegationInformation"
+	GetDelegationsByDelegator               = "GetDelegationsByDelegator"
+	GetDelegationsByDelegatorByBlockNumber  = "GetDelegationsByDelegatorByBlockNumber"
+	GetDelegationsByValidator               = "GetDelegationsByValidator"
+	GetDelegationByDelegatorAndValidator    = "GetDelegationByDelegatorAndValidator"
+	GetAvailableRedelegationBalance         = "GetAvailableRedelegationBalance"
+
+	// tracer
+	TraceChain         = "TraceChain"
+	TraceBlockByNumber = "TraceBlockByNumber"
+	TraceBlockByHash   = "TraceBlockByHash"
+	TraceBlock         = "TraceBlock"
+	TraceTransaction   = "TraceTransaction"
+	TraceCall          = "TraceCall"
+
+	// tracer parity
+	Block       = "Block"
+	Transaction = "Transaction"
+
+	// transaction
+	GetAccountNonce                            = "GetAccountNonce"
+	GetTransactionCount                        = "GetTransactionCount"
+	GetTransactionsCount                       = "GetTransactionsCount"
+	GetStakingTransactionsCount                = "GetStakingTransactionsCount"
+	RpcEstimateGas                             = "EstimateGas"
+	GetTransactionByHash                       = "GetTransactionByHash"
+	GetStakingTransactionByHash                = "GetStakingTransactionByHash"
+	GetTransactionsHistory                     = "GetTransactionsHistory"
+	GetStakingTransactionsHistory              = "GetStakingTransactionsHistory"
+	GetBlockTransactionCountByNumber           = "GetBlockTransactionCountByNumber"
+	GetBlockTransactionCountByHash             = "GetBlockTransactionCountByHash"
+	GetTransactionByBlockNumberAndIndex        = "GetTransactionByBlockNumberAndIndex"
+	GetTransactionByBlockHashAndIndex          = "GetTransactionByBlockHashAndIndex"
+	GetBlockStakingTransactionCountByNumber    = "GetBlockStakingTransactionCountByNumber"
+	GetBlockStakingTransactionCountByHash      = "GetBlockStakingTransactionCountByHash"
+	GetStakingTransactionByBlockNumberAndIndex = "GetStakingTransactionByBlockNumberAndIndex"
+	GetStakingTransactionByBlockHashAndIndex   = "GetStakingTransactionByBlockHashAndIndex"
+	GetTransactionReceipt                      = "GetTransactionReceipt"
+	GetCXReceiptByHash                         = "GetCXReceiptByHash"
+	ResendCx                                   = "ResendCx"
+
+	// filters
+	NewPendingTransactionFilter = "NewPendingTransactionFilter"
+	NewPendingTransactions      = "NewPendingTransactions"
+	NewBlockFilter              = "NewBlockFilter"
+	NewHeads                    = "NewHeads"
+	GetFilterChanges            = "GetFilterChanges"
+	Logs                        = "Logs"
+	NewFilter                   = "NewFilter"
+	GetLogs                     = "GetLogs"
+	UninstallFilter             = "UninstallFilter"
+	GetFilterLogs               = "GetFilterLogs"
+
+	// Web3
+	ClientVersion = "ClientVersion"
+)
+
+// info type const
+const (
+	QueryNumber       = "query_number"
+	FailedNumber      = "failed_number"
+	RateLimitedNumber = "rate_limited_number"
+)
+
+func init() {
+	prom.PromRegistry().MustRegister(
+		rpcRateLimitCounterVec,
+		rpcQueryInfoCounterVec,
+		rpcRequestDurationVec,
+		rpcRequestDurationGaugeVec,
+	)
+}
 
 var (
-	rpcRequestGauge        = metrics.NewRegisteredGauge("rpc/requests", nil)
-	successfulRequestGauge = metrics.NewRegisteredGauge("rpc/success", nil)
-	failedRequestGauge     = metrics.NewRegisteredGauge("rpc/failure", nil)
+	rpcRateLimitCounterVec = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "hmy",
+			Subsystem: "rpc",
+			Name:      "over_ratelimit",
+			Help:      "number of times triggered rpc rate limit",
+		},
+		[]string{"limiter_name"},
+	)
 
-	// serveTimeHistName is the prefix of the per-request serving time histograms.
-	serveTimeHistName = "rpc/duration"
+	rpcQueryInfoCounterVec = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Namespace: "hmy",
+			Subsystem: "rpc",
+			Name:      "query_info",
+			Help:      "different types of RPC query information",
+		},
+		[]string{"rpc_name", "info_type"},
+	)
 
-	rpcServingTimer = metrics.NewRegisteredTimer("rpc/duration/all", nil)
+	rpcRequestDurationVec = prometheus.NewHistogramVec(
+		prometheus.HistogramOpts{
+			Namespace: "hmy",
+			Subsystem: "rpc",
+			Name:      "request_delay_histogram",
+			Help:      "delay in seconds to do rpc requests",
+			// buckets: 50ms, 100ms, 200ms, 400ms, 800ms, 1600ms, 3200ms, +INF
+			Buckets: prometheus.ExponentialBuckets(0.05, 2, 8),
+		},
+		[]string{"rpc_name"},
+	)
+
+	rpcRequestDurationGaugeVec = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: "hmy",
+		Subsystem: "rpc",
+		Name:      "request_delay_gauge",
+		Help:      "delay in seconds to do rpc requests",
+	},
+		[]string{"rpc_name"},
+	)
 )
 
-// updateServeTimeHistogram tracks the serving time of a remote RPC call.
-func updateServeTimeHistogram(method string, success bool, elapsed time.Duration) {
-	note := "success"
-	if !success {
-		note = "failure"
+func DoMetricRPCRequest(rpcName string) *prometheus.Timer {
+	DoMetricRPCQueryInfo(rpcName, QueryNumber)
+	pLabel := getRPCDurationPromLabel(rpcName)
+	timer := prometheus.NewTimer(rpcRequestDurationVec.With(pLabel))
+	return timer
+}
+
+func DoRPCRequestDuration(rpcName string, timer *prometheus.Timer) {
+	pLabel := getRPCDurationPromLabel(rpcName)
+	rpcRequestDurationGaugeVec.With(pLabel).Set(timer.ObserveDuration().Seconds())
+}
+
+func DoMetricRPCQueryInfo(rpcName string, infoType string) {
+	pLabel := getRPCQueryInfoPromLabel(rpcName, infoType)
+	rpcQueryInfoCounterVec.With(pLabel).Inc()
+}
+
+func getRPCDurationPromLabel(rpcName string) prometheus.Labels {
+	return prometheus.Labels{
+		"rpc_name": rpcName,
 	}
-	h := fmt.Sprintf("%s/%s/%s", serveTimeHistName, method, note)
-	sampler := func() metrics.Sample {
-		return metrics.ResettingSample(
-			metrics.NewExpDecaySample(1028, 0.015),
-		)
+}
+
+func getRPCQueryInfoPromLabel(rpcName string, infoType string) prometheus.Labels {
+	return prometheus.Labels{
+		"rpc_name":  rpcName,
+		"info_type": infoType,
 	}
-	metrics.GetOrRegisterHistogramLazy(h, nil, sampler).Update(elapsed.Microseconds())
 }

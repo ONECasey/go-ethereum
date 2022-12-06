@@ -21,11 +21,13 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/harmony-one/harmony/core/types"
+	"github.com/harmony-one/harmony/internal/params"
+
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/state"
-	"github.com/ethereum/go-ethereum/params"
+	"github.com/harmony-one/harmony/core/state"
 )
 
 func TestMemoryGasCost(t *testing.T) {
@@ -39,8 +41,8 @@ func TestMemoryGasCost(t *testing.T) {
 	}
 	for i, tt := range tests {
 		v, err := memoryGasCost(&Memory{}, tt.size)
-		if (err == ErrGasUintOverflow) != tt.overflow {
-			t.Errorf("test %d: overflow mismatch: have %v, want %v", i, err == ErrGasUintOverflow, tt.overflow)
+		if (err == errGasUintOverflow) != tt.overflow {
+			t.Errorf("test %d: overflow mismatch: have %v, want %v", i, err == errGasUintOverflow, tt.overflow)
 		}
 		if v != tt.cost {
 			t.Errorf("test %d: gas cost mismatch: have %v, want %v", i, v, tt.cost)
@@ -81,17 +83,18 @@ func TestEIP2200(t *testing.T) {
 	for i, tt := range eip2200Tests {
 		address := common.BytesToAddress([]byte("contract"))
 
-		statedb, _ := state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
+		statedb, _ := state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()))
 		statedb.CreateAccount(address)
 		statedb.SetCode(address, hexutil.MustDecode(tt.input))
 		statedb.SetState(address, common.Hash{}, common.BytesToHash([]byte{tt.original}))
 		statedb.Finalise(true) // Push the state into the "original" slot
 
-		vmctx := BlockContext{
+		vmctx := Context{
 			CanTransfer: func(StateDB, common.Address, *big.Int) bool { return true },
-			Transfer:    func(StateDB, common.Address, common.Address, *big.Int) {},
+			Transfer:    func(StateDB, common.Address, common.Address, *big.Int, types.TransactionType) {},
+			IsValidator: func(StateDB, common.Address) bool { return false },
 		}
-		vmenv := NewEVM(vmctx, TxContext{}, statedb, params.AllEthashProtocolChanges, Config{ExtraEips: []int{2200}})
+		vmenv := NewEVM(vmctx, statedb, params.AllProtocolChanges, Config{ExtraEips: []int{2200}})
 
 		_, gas, err := vmenv.Call(AccountRef(common.Address{}), address, nil, tt.gaspool, new(big.Int))
 		if err != tt.failure {

@@ -17,26 +17,29 @@
 package runtime
 
 import (
-	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/harmony-one/harmony/core"
+	"github.com/harmony-one/harmony/core/vm"
 )
 
+// NewEnv ...
 func NewEnv(cfg *Config) *vm.EVM {
-	txContext := vm.TxContext{
-		Origin:   cfg.Origin,
-		GasPrice: cfg.GasPrice,
-	}
-	blockContext := vm.BlockContext{
+	context := vm.Context{
 		CanTransfer: core.CanTransfer,
 		Transfer:    core.Transfer,
-		GetHash:     cfg.GetHashFn,
+		IsValidator: core.IsValidator,
+		GetHash:     func(uint64) common.Hash { return common.Hash{} },
+		GetVRF:      func(uint64) common.Hash { return common.Hash{} },
+
+		Origin:      cfg.Origin,
 		Coinbase:    cfg.Coinbase,
 		BlockNumber: cfg.BlockNumber,
+		EpochNumber: cfg.EpochNumber,
+		VRF:         cfg.VRF,
 		Time:        cfg.Time,
-		Difficulty:  cfg.Difficulty,
 		GasLimit:    cfg.GasLimit,
-		BaseFee:     cfg.BaseFee,
+		GasPrice:    cfg.GasPrice,
 	}
 
-	return vm.NewEVM(blockContext, txContext, cfg.State, cfg.ChainConfig, cfg.EVMConfig)
+	return vm.NewEVM(context, cfg.State, cfg.ChainConfig, cfg.EVMConfig)
 }

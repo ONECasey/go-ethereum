@@ -17,26 +17,22 @@
 package keystore
 
 import (
-	"math/rand"
+	"io/ioutil"
 	"os"
 	"runtime"
-	"sort"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/event"
+	"github.com/harmony-one/harmony/accounts"
 )
 
 var testSigData = make([]byte, 32)
 
 func TestKeyStore(t *testing.T) {
 	dir, ks := tmpKeyStore(t, true)
+	defer os.RemoveAll(dir)
 
 	a, err := ks.NewAccount("foo")
 	if err != nil {
@@ -70,7 +66,8 @@ func TestKeyStore(t *testing.T) {
 }
 
 func TestSign(t *testing.T) {
-	_, ks := tmpKeyStore(t, true)
+	dir, ks := tmpKeyStore(t, true)
+	defer os.RemoveAll(dir)
 
 	pass := "" // not used but required by API
 	a1, err := ks.NewAccount(pass)
@@ -86,7 +83,8 @@ func TestSign(t *testing.T) {
 }
 
 func TestSignWithPassphrase(t *testing.T) {
-	_, ks := tmpKeyStore(t, true)
+	dir, ks := tmpKeyStore(t, true)
+	defer os.RemoveAll(dir)
 
 	pass := "passwd"
 	acc, err := ks.NewAccount(pass)
@@ -113,8 +111,8 @@ func TestSignWithPassphrase(t *testing.T) {
 }
 
 func TestTimedUnlock(t *testing.T) {
-	t.Parallel()
-	_, ks := tmpKeyStore(t, true)
+	dir, ks := tmpKeyStore(t, true)
+	defer os.RemoveAll(dir)
 
 	pass := "foo"
 	a1, err := ks.NewAccount(pass)
@@ -148,8 +146,8 @@ func TestTimedUnlock(t *testing.T) {
 }
 
 func TestOverrideUnlock(t *testing.T) {
-	t.Parallel()
-	_, ks := tmpKeyStore(t, false)
+	dir, ks := tmpKeyStore(t, false)
+	defer os.RemoveAll(dir)
 
 	pass := "foo"
 	a1, err := ks.NewAccount(pass)
@@ -189,8 +187,8 @@ func TestOverrideUnlock(t *testing.T) {
 
 // This test should fail under -race if signing races the expiration goroutine.
 func TestSignRace(t *testing.T) {
-	t.Parallel()
-	_, ks := tmpKeyStore(t, false)
+	dir, ks := tmpKeyStore(t, false)
+	defer os.RemoveAll(dir)
 
 	// Create a test account.
 	a1, err := ks.NewAccount("")
@@ -214,247 +212,14 @@ func TestSignRace(t *testing.T) {
 	t.Errorf("Account did not lock within the timeout")
 }
 
-// waitForKsUpdating waits until the updating-status of the ks reaches the
-// desired wantStatus.
-// It waits for a maximum time of maxTime, and returns false if it does not
-// finish in time
-func waitForKsUpdating(t *testing.T, ks *KeyStore, wantStatus bool, maxTime time.Duration) bool {
-	t.Helper()
-	// Wait max 250 ms, then return false
-	for t0 := time.Now(); time.Since(t0) < maxTime; {
-		if ks.isUpdating() == wantStatus {
-			return true
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	return false
-}
-
-// Tests that the wallet notifier loop starts and stops correctly based on the
-// addition and removal of wallet event subscriptions.
-func TestWalletNotifierLifecycle(t *testing.T) {
-	t.Parallel()
-	// Create a temporary keystore to test with
-	_, ks := tmpKeyStore(t, false)
-
-	// Ensure that the notification updater is not running yet
-	time.Sleep(250 * time.Millisecond)
-
-	if ks.isUpdating() {
-		t.Errorf("wallet notifier running without subscribers")
-	}
-	// Subscribe to the wallet feed and ensure the updater boots up
-	updates := make(chan accounts.WalletEvent)
-
-	subs := make([]event.Subscription, 2)
-	for i := 0; i < len(subs); i++ {
-		// Create a new subscription
-		subs[i] = ks.Subscribe(updates)
-		if !waitForKsUpdating(t, ks, true, 250*time.Millisecond) {
-			t.Errorf("sub %d: wallet notifier not running after subscription", i)
-		}
-	}
-	// Close all but one sub
-	for i := 0; i < len(subs)-1; i++ {
-		// Close an existing subscription
-		subs[i].Unsubscribe()
-	}
-	// Check that it is still running
-	time.Sleep(250 * time.Millisecond)
-
-	if !ks.isUpdating() {
-		t.Fatal("event notifier stopped prematurely")
-	}
-	// Unsubscribe the last one and ensure the updater terminates eventually.
-	subs[len(subs)-1].Unsubscribe()
-	if !waitForKsUpdating(t, ks, false, 4*time.Second) {
-		t.Errorf("wallet notifier didn't terminate after unsubscribe")
-	}
-}
-
-type walletEvent struct {
-	accounts.WalletEvent
-	a accounts.Account
-}
-
-// Tests that wallet notifications and correctly fired when accounts are added
-// or deleted from the keystore.
-func TestWalletNotifications(t *testing.T) {
-	_, ks := tmpKeyStore(t, false)
-
-	// Subscribe to the wallet feed and collect events.
-	var (
-		events  []walletEvent
-		updates = make(chan accounts.WalletEvent)
-		sub     = ks.Subscribe(updates)
-	)
-	defer sub.Unsubscribe()
-	go func() {
-		for {
-			select {
-			case ev := <-updates:
-				events = append(events, walletEvent{ev, ev.Wallet.Accounts()[0]})
-			case <-sub.Err():
-				close(updates)
-				return
-			}
-		}
-	}()
-
-	// Randomly add and remove accounts.
-	var (
-		live       = make(map[common.Address]accounts.Account)
-		wantEvents []walletEvent
-	)
-	for i := 0; i < 1024; i++ {
-		if create := len(live) == 0 || rand.Int()%4 > 0; create {
-			// Add a new account and ensure wallet notifications arrives
-			account, err := ks.NewAccount("")
-			if err != nil {
-				t.Fatalf("failed to create test account: %v", err)
-			}
-			live[account.Address] = account
-			wantEvents = append(wantEvents, walletEvent{accounts.WalletEvent{Kind: accounts.WalletArrived}, account})
-		} else {
-			// Delete a random account.
-			var account accounts.Account
-			for _, a := range live {
-				account = a
-				break
-			}
-			if err := ks.Delete(account, ""); err != nil {
-				t.Fatalf("failed to delete test account: %v", err)
-			}
-			delete(live, account.Address)
-			wantEvents = append(wantEvents, walletEvent{accounts.WalletEvent{Kind: accounts.WalletDropped}, account})
-		}
-	}
-
-	// Shut down the event collector and check events.
-	sub.Unsubscribe()
-	for ev := range updates {
-		events = append(events, walletEvent{ev, ev.Wallet.Accounts()[0]})
-	}
-	checkAccounts(t, live, ks.Wallets())
-	checkEvents(t, wantEvents, events)
-}
-
-// TestImportExport tests the import functionality of a keystore.
-func TestImportECDSA(t *testing.T) {
-	_, ks := tmpKeyStore(t, true)
-	key, err := crypto.GenerateKey()
-	if err != nil {
-		t.Fatalf("failed to generate key: %v", key)
-	}
-	if _, err = ks.ImportECDSA(key, "old"); err != nil {
-		t.Errorf("importing failed: %v", err)
-	}
-	if _, err = ks.ImportECDSA(key, "old"); err == nil {
-		t.Errorf("importing same key twice succeeded")
-	}
-	if _, err = ks.ImportECDSA(key, "new"); err == nil {
-		t.Errorf("importing same key twice succeeded")
-	}
-}
-
-// TestImportECDSA tests the import and export functionality of a keystore.
-func TestImportExport(t *testing.T) {
-	_, ks := tmpKeyStore(t, true)
-	acc, err := ks.NewAccount("old")
-	if err != nil {
-		t.Fatalf("failed to create account: %v", acc)
-	}
-	json, err := ks.Export(acc, "old", "new")
-	if err != nil {
-		t.Fatalf("failed to export account: %v", acc)
-	}
-	_, ks2 := tmpKeyStore(t, true)
-	if _, err = ks2.Import(json, "old", "old"); err == nil {
-		t.Errorf("importing with invalid password succeeded")
-	}
-	acc2, err := ks2.Import(json, "new", "new")
-	if err != nil {
-		t.Errorf("importing failed: %v", err)
-	}
-	if acc.Address != acc2.Address {
-		t.Error("imported account does not match exported account")
-	}
-	if _, err = ks2.Import(json, "new", "new"); err == nil {
-		t.Errorf("importing a key twice succeeded")
-	}
-}
-
-// TestImportRace tests the keystore on races.
-// This test should fail under -race if importing races.
-func TestImportRace(t *testing.T) {
-	_, ks := tmpKeyStore(t, true)
-	acc, err := ks.NewAccount("old")
-	if err != nil {
-		t.Fatalf("failed to create account: %v", acc)
-	}
-	json, err := ks.Export(acc, "old", "new")
-	if err != nil {
-		t.Fatalf("failed to export account: %v", acc)
-	}
-	_, ks2 := tmpKeyStore(t, true)
-	var atom uint32
-	var wg sync.WaitGroup
-	wg.Add(2)
-	for i := 0; i < 2; i++ {
-		go func() {
-			defer wg.Done()
-			if _, err := ks2.Import(json, "new", "new"); err != nil {
-				atomic.AddUint32(&atom, 1)
-			}
-		}()
-	}
-	wg.Wait()
-	if atom != 1 {
-		t.Errorf("Import is racy")
-	}
-}
-
-// checkAccounts checks that all known live accounts are present in the wallet list.
-func checkAccounts(t *testing.T, live map[common.Address]accounts.Account, wallets []accounts.Wallet) {
-	if len(live) != len(wallets) {
-		t.Errorf("wallet list doesn't match required accounts: have %d, want %d", len(wallets), len(live))
-		return
-	}
-	liveList := make([]accounts.Account, 0, len(live))
-	for _, account := range live {
-		liveList = append(liveList, account)
-	}
-	sort.Sort(accountsByURL(liveList))
-	for j, wallet := range wallets {
-		if accs := wallet.Accounts(); len(accs) != 1 {
-			t.Errorf("wallet %d: contains invalid number of accounts: have %d, want 1", j, len(accs))
-		} else if accs[0] != liveList[j] {
-			t.Errorf("wallet %d: account mismatch: have %v, want %v", j, accs[0], liveList[j])
-		}
-	}
-}
-
-// checkEvents checks that all events in 'want' are present in 'have'. Events may be present multiple times.
-func checkEvents(t *testing.T, want []walletEvent, have []walletEvent) {
-	for _, wantEv := range want {
-		nmatch := 0
-		for ; len(have) > 0; nmatch++ {
-			if have[0].Kind != wantEv.Kind || have[0].a != wantEv.a {
-				break
-			}
-			have = have[1:]
-		}
-		if nmatch == 0 {
-			t.Fatalf("can't find event with Kind=%v for %x", wantEv.Kind, wantEv.a.Address)
-		}
-	}
-}
-
 func tmpKeyStore(t *testing.T, encrypted bool) (string, *KeyStore) {
-	d := t.TempDir()
-	newKs := NewPlaintextKeyStore
-	if encrypted {
-		newKs = func(kd string) *KeyStore { return NewKeyStore(kd, veryLightScryptN, veryLightScryptP) }
+	d, err := ioutil.TempDir("", "eth-keystore-test")
+	if err != nil {
+		t.Fatal(err)
 	}
-	return d, newKs(d)
+	newK := NewPlaintextKeyStore
+	if encrypted {
+		newK = func(kd string) *KeyStore { return NewKeyStore(kd, veryLightScryptN, veryLightScryptP) }
+	}
+	return d, newK(d)
 }

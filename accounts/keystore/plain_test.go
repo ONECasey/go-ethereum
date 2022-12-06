@@ -20,6 +20,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io/ioutil"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -30,7 +32,10 @@ import (
 )
 
 func tmpKeyStoreIface(t *testing.T, encrypted bool) (dir string, ks keyStore) {
-	d := t.TempDir()
+	d, err := ioutil.TempDir("", "geth-keystore-test")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if encrypted {
 		ks = &keyStorePassphrase{d, veryLightScryptN, veryLightScryptP, true}
 	} else {
@@ -40,7 +45,8 @@ func tmpKeyStoreIface(t *testing.T, encrypted bool) (dir string, ks keyStore) {
 }
 
 func TestKeyStorePlain(t *testing.T) {
-	_, ks := tmpKeyStoreIface(t, false)
+	dir, ks := tmpKeyStoreIface(t, false)
+	defer os.RemoveAll(dir)
 
 	pass := "" // not used but required by API
 	k1, account, err := storeNewKey(ks, rand.Reader, pass)
@@ -60,7 +66,8 @@ func TestKeyStorePlain(t *testing.T) {
 }
 
 func TestKeyStorePassphrase(t *testing.T) {
-	_, ks := tmpKeyStoreIface(t, true)
+	dir, ks := tmpKeyStoreIface(t, true)
+	defer os.RemoveAll(dir)
 
 	pass := "foo"
 	k1, account, err := storeNewKey(ks, rand.Reader, pass)
@@ -80,7 +87,8 @@ func TestKeyStorePassphrase(t *testing.T) {
 }
 
 func TestKeyStorePassphraseDecryptionFail(t *testing.T) {
-	_, ks := tmpKeyStoreIface(t, true)
+	dir, ks := tmpKeyStoreIface(t, true)
+	defer os.RemoveAll(dir)
 
 	pass := "foo"
 	k1, account, err := storeNewKey(ks, rand.Reader, pass)
@@ -88,12 +96,13 @@ func TestKeyStorePassphraseDecryptionFail(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = ks.GetKey(k1.Address, account.URL.Path, "bar"); err != ErrDecrypt {
-		t.Fatalf("wrong error for invalid password\ngot %q\nwant %q", err, ErrDecrypt)
+		t.Fatalf("wrong error for invalid passphrase\ngot %q\nwant %q", err, ErrDecrypt)
 	}
 }
 
 func TestImportPreSaleKey(t *testing.T) {
 	dir, ks := tmpKeyStoreIface(t, true)
+	defer os.RemoveAll(dir)
 
 	// file content of a presale key file generated with:
 	// python pyethsaletool.py genwallet
@@ -115,13 +124,13 @@ func TestImportPreSaleKey(t *testing.T) {
 // Test and utils for the key store tests in the Ethereum JSON tests;
 // testdataKeyStoreTests/basic_tests.json
 type KeyStoreTestV3 struct {
-	Json     encryptedKeyJSONV3
+	JSON     encryptedKeyJSONV3
 	Password string
 	Priv     string
 }
 
 type KeyStoreTestV1 struct {
-	Json     encryptedKeyJSONV1
+	JSON     encryptedKeyJSONV1
 	Password string
 	Priv     string
 }
@@ -197,7 +206,7 @@ func TestV1_2(t *testing.T) {
 }
 
 func testDecryptV3(test KeyStoreTestV3, t *testing.T) {
-	privBytes, _, err := decryptKeyV3(&test.Json, test.Password)
+	privBytes, _, err := decryptKeyV3(&test.JSON, test.Password)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +217,7 @@ func testDecryptV3(test KeyStoreTestV3, t *testing.T) {
 }
 
 func testDecryptV1(test KeyStoreTestV1, t *testing.T) {
-	privBytes, _, err := decryptKeyV1(&test.Json, test.Password)
+	privBytes, _, err := decryptKeyV1(&test.JSON, test.Password)
 	if err != nil {
 		t.Fatal(err)
 	}

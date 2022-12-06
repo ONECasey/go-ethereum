@@ -22,24 +22,27 @@ import (
 	"sync"
 
 	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/accounts"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/rpc"
-	"github.com/ethereum/go-ethereum/signer/core/apitypes"
+	"github.com/ethereum/go-ethereum/signer/core"
+	"github.com/harmony-one/harmony/accounts"
+	"github.com/harmony-one/harmony/core/types"
+	"github.com/harmony-one/harmony/eth/rpc"
 )
 
+// ExternalBackend is a struct for external backend
 type ExternalBackend struct {
 	signers []accounts.Wallet
 }
 
+// Wallets returns the list of wallets
 func (eb *ExternalBackend) Wallets() []accounts.Wallet {
 	return eb.signers
 }
 
+// NewExternalBackend ...
 func NewExternalBackend(endpoint string) (*ExternalBackend, error) {
 	signer, err := NewExternalSigner(endpoint)
 	if err != nil {
@@ -50,6 +53,7 @@ func NewExternalBackend(endpoint string) (*ExternalBackend, error) {
 	}, nil
 }
 
+// Subscribe ...
 func (eb *ExternalBackend) Subscribe(sink chan<- accounts.WalletEvent) event.Subscription {
 	return event.NewSubscription(func(quit <-chan struct{}) error {
 		<-quit
@@ -68,6 +72,7 @@ type ExternalSigner struct {
 	cache    []accounts.Account
 }
 
+// NewExternalSigner ...
 func NewExternalSigner(endpoint string) (*ExternalSigner, error) {
 	client, err := rpc.Dial(endpoint)
 	if err != nil {
@@ -86,6 +91,7 @@ func NewExternalSigner(endpoint string) (*ExternalSigner, error) {
 	return extsigner, nil
 }
 
+// URL ...
 func (api *ExternalSigner) URL() accounts.URL {
 	return accounts.URL{
 		Scheme: "extapi",
@@ -93,18 +99,22 @@ func (api *ExternalSigner) URL() accounts.URL {
 	}
 }
 
+// Status ...
 func (api *ExternalSigner) Status() (string, error) {
 	return api.status, nil
 }
 
+// Open ...
 func (api *ExternalSigner) Open(passphrase string) error {
 	return fmt.Errorf("operation not supported on external signers")
 }
 
+// Close ...
 func (api *ExternalSigner) Close() error {
 	return fmt.Errorf("operation not supported on external signers")
 }
 
+// Accounts ...
 func (api *ExternalSigner) Accounts() []accounts.Account {
 	var accnts []accounts.Account
 	res, err := api.listAccounts()
@@ -127,6 +137,7 @@ func (api *ExternalSigner) Accounts() []accounts.Account {
 	return accnts
 }
 
+// Contains ...
 func (api *ExternalSigner) Contains(account accounts.Account) bool {
 	api.cacheMu.RLock()
 	defer api.cacheMu.RUnlock()
@@ -144,12 +155,18 @@ func (api *ExternalSigner) Contains(account accounts.Account) bool {
 	return false
 }
 
+// Derive ...
 func (api *ExternalSigner) Derive(path accounts.DerivationPath, pin bool) (accounts.Account, error) {
 	return accounts.Account{}, fmt.Errorf("operation not supported on external signers")
 }
 
+// SelfDerive ...
 func (api *ExternalSigner) SelfDerive(bases []accounts.DerivationPath, chain ethereum.ChainStateReader) {
 	log.Error("operation SelfDerive not supported on external signers")
+}
+
+func (api *ExternalSigner) signHash(account accounts.Account, hash []byte) ([]byte, error) {
+	return []byte{}, fmt.Errorf("operation not supported on external signers")
 }
 
 // SignData signs keccak256(data). The mimetype parameter describes the type of data being signed
@@ -169,6 +186,7 @@ func (api *ExternalSigner) SignData(account accounts.Account, mimeType string, d
 	return res, nil
 }
 
+// SignText ...
 func (api *ExternalSigner) SignText(account accounts.Account, text []byte) ([]byte, error) {
 	var signature hexutil.Bytes
 	var signAddress = common.NewMixedcaseAddress(account.Address)
@@ -192,10 +210,7 @@ type signTransactionResult struct {
 	Tx  *types.Transaction `json:"tx"`
 }
 
-// SignTx sends the transaction to the external signer.
-// If chainID is nil, or tx.ChainID is zero, the chain ID will be assigned
-// by the external signer. For non-legacy transactions, the chain ID of the
-// transaction overrides the chainID parameter.
+// SignTx ...
 func (api *ExternalSigner) SignTx(account accounts.Account, tx *types.Transaction, chainID *big.Int) (*types.Transaction, error) {
 	data := hexutil.Bytes(tx.Data())
 	var to *common.MixedcaseAddress
@@ -203,36 +218,14 @@ func (api *ExternalSigner) SignTx(account accounts.Account, tx *types.Transactio
 		t := common.NewMixedcaseAddress(*tx.To())
 		to = &t
 	}
-	args := &apitypes.SendTxArgs{
-		Data:  &data,
-		Nonce: hexutil.Uint64(tx.Nonce()),
-		Value: hexutil.Big(*tx.Value()),
-		Gas:   hexutil.Uint64(tx.Gas()),
-		To:    to,
-		From:  common.NewMixedcaseAddress(account.Address),
-	}
-	switch tx.Type() {
-	case types.LegacyTxType, types.AccessListTxType:
-		args.GasPrice = (*hexutil.Big)(tx.GasPrice())
-	case types.DynamicFeeTxType:
-		args.MaxFeePerGas = (*hexutil.Big)(tx.GasFeeCap())
-		args.MaxPriorityFeePerGas = (*hexutil.Big)(tx.GasTipCap())
-	default:
-		return nil, fmt.Errorf("unsupported tx type %d", tx.Type())
-	}
-	// We should request the default chain id that we're operating with
-	// (the chain we're executing on)
-	if chainID != nil && chainID.Sign() != 0 {
-		args.ChainID = (*hexutil.Big)(chainID)
-	}
-	if tx.Type() != types.LegacyTxType {
-		// However, if the user asked for a particular chain id, then we should
-		// use that instead.
-		if tx.ChainId().Sign() != 0 {
-			args.ChainID = (*hexutil.Big)(tx.ChainId())
-		}
-		accessList := tx.AccessList()
-		args.AccessList = &accessList
+	args := &core.SendTxArgs{
+		Data:     &data,
+		Nonce:    hexutil.Uint64(tx.Nonce()),
+		Value:    hexutil.Big(*tx.Value()),
+		Gas:      hexutil.Uint64(tx.GasLimit()),
+		GasPrice: hexutil.Big(*tx.GasPrice()),
+		To:       to,
+		From:     common.NewMixedcaseAddress(account.Address),
 	}
 	var res signTransactionResult
 	if err := api.client.Call(&res, "account_signTransaction", args); err != nil {
@@ -241,13 +234,17 @@ func (api *ExternalSigner) SignTx(account accounts.Account, tx *types.Transactio
 	return res.Tx, nil
 }
 
+// SignTextWithPassphrase ...
 func (api *ExternalSigner) SignTextWithPassphrase(account accounts.Account, passphrase string, text []byte) ([]byte, error) {
 	return []byte{}, fmt.Errorf("password-operations not supported on external signers")
 }
 
+// SignTxWithPassphrase ...
 func (api *ExternalSigner) SignTxWithPassphrase(account accounts.Account, passphrase string, tx *types.Transaction, chainID *big.Int) (*types.Transaction, error) {
 	return nil, fmt.Errorf("password-operations not supported on external signers")
 }
+
+// SignDataWithPassphrase ...
 func (api *ExternalSigner) SignDataWithPassphrase(account accounts.Account, passphrase, mimeType string, data []byte) ([]byte, error) {
 	return nil, fmt.Errorf("password-operations not supported on external signers")
 }

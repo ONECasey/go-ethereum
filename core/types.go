@@ -17,35 +17,50 @@
 package core
 
 import (
-	"github.com/ethereum/go-ethereum/core/state"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/core/vm"
+	"github.com/harmony-one/harmony/consensus/reward"
+	"github.com/harmony-one/harmony/core/state"
+	"github.com/harmony-one/harmony/core/types"
+	"github.com/harmony-one/harmony/core/vm"
+	stakingTypes "github.com/harmony-one/harmony/staking/types"
 )
 
 // Validator is an interface which defines the standard for block validation. It
 // is only responsible for validating block contents, as the header validation is
 // done by the specific consensus engines.
+//
 type Validator interface {
 	// ValidateBody validates the given block's content.
 	ValidateBody(block *types.Block) error
 
 	// ValidateState validates the given statedb and optionally the receipts and
 	// gas used.
-	ValidateState(block *types.Block, state *state.StateDB, receipts types.Receipts, usedGas uint64) error
-}
+	ValidateState(block *types.Block, state *state.DB, receipts types.Receipts, cxs types.CXReceipts, usedGas uint64) error
 
-// Prefetcher is an interface for pre-caching transaction signatures and state.
-type Prefetcher interface {
-	// Prefetch processes the state changes according to the Ethereum rules by running
-	// the transaction messages using the statedb, but any changes are discarded. The
-	// only goal is to pre-cache transaction signatures and state trie nodes.
-	Prefetch(block *types.Block, statedb *state.StateDB, cfg vm.Config, interrupt *uint32)
+	// ValidateHeader checks whether a header conforms to the consensus rules of a
+	// given engine. Verifying the seal may be done optionally here, or explicitly
+	// via the VerifySeal method.
+	ValidateHeader(block *types.Block, seal bool) error
+
+	// ValidateHeaders verifies a batch of blocks' headers concurrently. The method returns a quit channel
+	// to abort the operations and a results channel to retrieve the async verifications
+	ValidateHeaders(chain []*types.Block) (chan<- struct{}, <-chan error)
+
+	// ValidateCXReceiptsProof checks whether the given CXReceiptsProof is consistency with itself
+	ValidateCXReceiptsProof(cxp *types.CXReceiptsProof) error
 }
 
 // Processor is an interface for processing blocks using a given initial state.
+//
+// Process takes the block to be processed and the statedb upon which the
+// initial state is based. It should return the receipts generated, amount
+// of gas used in the process and return an error if any of the internal rules
+// failed.
+// Process will cache the result of successfully processed blocks.
+// readCache decides whether the method will try reading from result cache.
 type Processor interface {
-	// Process processes the state changes according to the Ethereum rules by running
-	// the transaction messages using the statedb and applying any rewards to both
-	// the processor (coinbase) and any included uncles.
-	Process(block *types.Block, statedb *state.StateDB, cfg vm.Config) (types.Receipts, []*types.Log, uint64, error)
+	Process(block *types.Block, statedb *state.DB, cfg vm.Config, readCache bool) (
+		types.Receipts, types.CXReceipts, []stakingTypes.StakeMsg,
+		[]*types.Log, uint64, reward.Reader, *state.DB, error,
+	)
+	CacheProcessorResult(cacheKey interface{}, result *ProcessorResult)
 }
