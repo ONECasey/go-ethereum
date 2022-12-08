@@ -25,24 +25,21 @@ import (
 	"github.com/ethereum/go-ethereum/core/rawdb"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/trie"
 )
 
 type stateTest struct {
 	db    ethdb.Database
-	state *StateDB
+	state *DB
 }
 
 func newStateTest() *stateTest {
 	db := rawdb.NewMemoryDatabase()
-	sdb, _ := New(common.Hash{}, NewDatabase(db), nil)
+	sdb, _ := New(common.Hash{}, NewDatabase(db))
 	return &stateTest{db: db, state: sdb}
 }
 
 func TestDump(t *testing.T) {
-	db := rawdb.NewMemoryDatabase()
-	sdb, _ := New(common.Hash{}, NewDatabaseWithConfig(db, &trie.Config{Preimages: true}), nil)
-	s := &stateTest{db: db, state: sdb}
+	s := newStateTest()
 
 	// generate a few entries
 	obj1 := s.state.GetOrNewStateObject(common.BytesToAddress([]byte{0x01}))
@@ -150,7 +147,7 @@ func TestSnapshotEmpty(t *testing.T) {
 }
 
 func TestSnapshot2(t *testing.T) {
-	state, _ := New(common.Hash{}, NewDatabase(rawdb.NewMemoryDatabase()), nil)
+	state, _ := New(common.Hash{}, NewDatabase(rawdb.NewMemoryDatabase()))
 
 	stateobjaddr0 := common.BytesToAddress([]byte("so0"))
 	stateobjaddr1 := common.BytesToAddress([]byte("so1"))
@@ -172,7 +169,7 @@ func TestSnapshot2(t *testing.T) {
 	state.setStateObject(so0)
 
 	root, _ := state.Commit(false)
-	state, _ = New(root, state.db, state.snaps)
+	state.Reset(root)
 
 	// and one with deleted == true
 	so1 := state.getStateObject(stateobjaddr1)
@@ -205,7 +202,7 @@ func TestSnapshot2(t *testing.T) {
 	}
 }
 
-func compareStateObjects(so0, so1 *stateObject, t *testing.T) {
+func compareStateObjects(so0, so1 *Object, t *testing.T) {
 	if so0.Address() != so1.Address() {
 		t.Fatalf("Address mismatch: have %v, want %v", so0.address, so1.address)
 	}

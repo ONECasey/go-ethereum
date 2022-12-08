@@ -19,9 +19,11 @@ package abi
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"math/big"
+
+	"github.com/pkg/errors"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -34,7 +36,6 @@ type ABI struct {
 	Constructor Method
 	Methods     map[string]Method
 	Events      map[string]Event
-	Errors      map[string]Error
 
 	// Additional "special" functions introduced in solidity v0.6.0.
 	// It's separated from the original default fallback. Each contract
@@ -87,7 +88,7 @@ func (abi ABI) getArguments(name string, data []byte) (Arguments, error) {
 	var args Arguments
 	if method, ok := abi.Methods[name]; ok {
 		if len(data)%32 != 0 {
-			return nil, fmt.Errorf("abi: improperly formatted output: %q - Bytes: %+v", data, data)
+			return nil, fmt.Errorf("abi: improperly formatted output: %s - Bytes: [%+v]", string(data), data)
 		}
 		args = method.Outputs
 	}
@@ -95,7 +96,7 @@ func (abi ABI) getArguments(name string, data []byte) (Arguments, error) {
 		args = event.Inputs
 	}
 	if args == nil {
-		return nil, fmt.Errorf("abi: could not locate named method or event: %s", name)
+		return nil, errors.New("abi: could not locate named method or event")
 	}
 	return args, nil
 }
@@ -158,13 +159,12 @@ func (abi *ABI) UnmarshalJSON(data []byte) error {
 	}
 	abi.Methods = make(map[string]Method)
 	abi.Events = make(map[string]Event)
-	abi.Errors = make(map[string]Error)
 	for _, field := range fields {
 		switch field.Type {
 		case "constructor":
 			abi.Constructor = NewMethod("", "", Constructor, field.StateMutability, field.Constant, field.Payable, field.Inputs, nil)
 		case "function":
-			name := ResolveNameConflict(field.Name, func(s string) bool { _, ok := abi.Methods[s]; return ok })
+			name := abi.overloadedMethodName(field.Name)
 			abi.Methods[name] = NewMethod(name, field.Name, Function, field.StateMutability, field.Constant, field.Payable, field.Inputs, field.Outputs)
 		case "fallback":
 			// New introduced function type in v0.6.0, check more detail
@@ -184,17 +184,43 @@ func (abi *ABI) UnmarshalJSON(data []byte) error {
 			}
 			abi.Receive = NewMethod("", "", Receive, field.StateMutability, field.Constant, field.Payable, nil, nil)
 		case "event":
-			name := ResolveNameConflict(field.Name, func(s string) bool { _, ok := abi.Events[s]; return ok })
+			name := abi.overloadedEventName(field.Name)
 			abi.Events[name] = NewEvent(name, field.Name, field.Anonymous, field.Inputs)
-		case "error":
-			// Errors cannot be overloaded or overridden but are inherited,
-			// no need to resolve the name conflict here.
-			abi.Errors[field.Name] = NewError(field.Name, field.Inputs)
 		default:
 			return fmt.Errorf("abi: could not recognize type %v of field %v", field.Type, field.Name)
 		}
 	}
 	return nil
+}
+
+// overloadedMethodName returns the next available name for a given function.
+// Needed since solidity allows for function overload.
+//
+// e.g. if the abi contains Methods send, send1
+// overloadedMethodName would return send2 for input send.
+func (abi *ABI) overloadedMethodName(rawName string) string {
+	name := rawName
+	_, ok := abi.Methods[name]
+	for idx := 0; ok; idx++ {
+		name = fmt.Sprintf("%s%d", rawName, idx)
+		_, ok = abi.Methods[name]
+	}
+	return name
+}
+
+// overloadedEventName returns the next available name for a given event.
+// Needed since solidity allows for event overload.
+//
+// e.g. if the abi contains events received, received1
+// overloadedEventName would return received2 for input received.
+func (abi *ABI) overloadedEventName(rawName string) string {
+	name := rawName
+	_, ok := abi.Events[name]
+	for idx := 0; ok; idx++ {
+		name = fmt.Sprintf("%s%d", rawName, idx)
+		_, ok = abi.Events[name]
+	}
+	return name
 }
 
 // MethodById looks up a method by the 4-byte id,
@@ -252,4 +278,36 @@ func UnpackRevert(data []byte) (string, error) {
 		return "", err
 	}
 	return unpacked[0].(string), nil
+}
+
+// ParseAddressFromKey pulls out the address value from a map with provided key,
+// and validates the data type for it
+func ParseAddressFromKey(args map[string]interface{}, key string) (common.Address, error) {
+	if address, ok := args[key].(common.Address); ok {
+		return address, nil
+	} else {
+		return common.Address{}, errors.Errorf("Cannot parse address from %v", args[key])
+	}
+}
+
+// ParseBigIntFromKey pulls out the *big.Int value from a map with provided key,
+// and validates the data type for it
+func ParseBigIntFromKey(args map[string]interface{}, key string) (*big.Int, error) {
+	bigInt, ok := args[key].(*big.Int)
+	if !ok {
+		return nil, errors.Errorf(
+			"Cannot parse BigInt from %v", args[key])
+	} else {
+		return bigInt, nil
+	}
+}
+
+// ParseUint32FromKey pulls out the uint64 value from a map with provided key,
+// and validates the data type for it
+func ParseUint32FromKey(args map[string]interface{}, key string) (uint32, error) {
+	if val, ok := args[key].(uint32); ok {
+		return val, nil
+	} else {
+		return 0, errors.Errorf("Cannot parse uint32 from %v", args[key])
+	}
 }

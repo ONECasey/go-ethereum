@@ -1,150 +1,149 @@
-// Copyright 2015 The go-ethereum Authors
-// This file is part of go-ethereum.
-//
-// go-ethereum is free software: you can redistribute it and/or modify
-// it under the terms of the GNU General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// go-ethereum is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU General Public License for more details.
-//
-// You should have received a copy of the GNU General Public License
-// along with go-ethereum. If not, see <http://www.gnu.org/licenses/>.
+// bootnode provides peer discovery service to new node to connect to the p2p network
 
-// bootnode runs a bootstrap node for the Ethereum Discovery Protocol.
 package main
 
 import (
-	"crypto/ecdsa"
 	"flag"
 	"fmt"
-	"net"
 	"os"
+	"path"
 
-	"github.com/ethereum/go-ethereum/cmd/utils"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/log"
-	"github.com/ethereum/go-ethereum/p2p/discover"
-	"github.com/ethereum/go-ethereum/p2p/enode"
-	"github.com/ethereum/go-ethereum/p2p/nat"
-	"github.com/ethereum/go-ethereum/p2p/netutil"
+	net "github.com/libp2p/go-libp2p-core/network"
+	ma "github.com/multiformats/go-multiaddr"
+
+	"github.com/harmony-one/harmony/internal/utils"
+	"github.com/harmony-one/harmony/p2p"
 )
 
-func main() {
-	var (
-		listenAddr  = flag.String("addr", ":30301", "listen address")
-		genKey      = flag.String("genkey", "", "generate a node key")
-		writeAddr   = flag.Bool("writeaddress", false, "write out the node's public key and quit")
-		nodeKeyFile = flag.String("nodekey", "", "private key filename")
-		nodeKeyHex  = flag.String("nodekeyhex", "", "private key as hex (for testing)")
-		natdesc     = flag.String("nat", "none", "port mapping mechanism (any|none|upnp|pmp|extip:<IP>)")
-		netrestrict = flag.String("netrestrict", "", "restrict network communication to the given IP networks (CIDR masks)")
-		runv5       = flag.Bool("v5", false, "run a v5 topic discovery bootnode")
-		verbosity   = flag.Int("verbosity", int(log.LvlInfo), "log verbosity (0-5)")
-		vmodule     = flag.String("vmodule", "", "log verbosity pattern")
+// ConnLogger ..
+type ConnLogger struct {
+	l log.Logger
+}
 
-		nodeKey *ecdsa.PrivateKey
-		err     error
-	)
+func netLogger(n net.Network, l log.Logger) log.Logger {
+	return l.New(
+		"netLocalPeer", n.LocalPeer(),
+		"netListenAddresses", n.ListenAddresses())
+}
+
+func connLogger(c net.Conn, l log.Logger) log.Logger {
+	return l.New(
+		"connLocalPeer", c.LocalPeer(),
+		"connLocalAddr", c.LocalMultiaddr(),
+		"connRemotePeer", c.RemotePeer(),
+		"connRemoteAddr", c.RemoteMultiaddr())
+}
+
+func streamLogger(s net.Stream, l log.Logger) log.Logger {
+	return connLogger(s.Conn(), l).New("streamProtocolID", s.Protocol())
+}
+
+// Listen logs a listener starting listening on an address.
+func (cl ConnLogger) Listen(n net.Network, ma ma.Multiaddr) {
+	utils.WithCaller(netLogger(n, cl.l)).
+		Debug("listener starting", "listenAddress", ma)
+}
+
+// ListenClose logs a listener stopping listening on an address.
+func (cl ConnLogger) ListenClose(n net.Network, ma ma.Multiaddr) {
+	utils.WithCaller(netLogger(n, cl.l)).
+		Debug("listener closing", "listenAddress", ma)
+}
+
+// Connected logs a connection getting opened.
+func (cl ConnLogger) Connected(n net.Network, c net.Conn) {
+	utils.WithCaller(connLogger(c, netLogger(n, cl.l))).Debug("connected")
+}
+
+// Disconnected logs a connection getting closed.
+func (cl ConnLogger) Disconnected(n net.Network, c net.Conn) {
+	utils.WithCaller(connLogger(c, netLogger(n, cl.l))).Debug("disconnected")
+}
+
+// OpenedStream logs a new stream getting opened.
+func (cl ConnLogger) OpenedStream(n net.Network, s net.Stream) {
+	utils.WithCaller(streamLogger(s, netLogger(n, cl.l))).Debug("stream opened")
+}
+
+// ClosedStream logs a stream getting closed.
+func (cl ConnLogger) ClosedStream(n net.Network, s net.Stream) {
+	utils.WithCaller(streamLogger(s, netLogger(n, cl.l))).Debug("stream closed")
+}
+
+// NewConnLogger returns a new connection logger that uses the given
+// Ethereum logger.  See ConnLogger for usage.
+func NewConnLogger(l log.Logger) *ConnLogger {
+	return &ConnLogger{l: l}
+}
+
+var (
+	version string
+	builtBy string
+	builtAt string
+	commit  string
+)
+
+func printVersion(me string) {
+	fmt.Fprintf(os.Stderr, "Harmony (C) 2019. %v, version %v-%v (%v %v)\n", path.Base(me), version, commit, builtBy, builtAt)
+	os.Exit(0)
+}
+
+func main() {
+	ip := flag.String("ip", "127.0.0.1", "IP of the node")
+	port := flag.String("port", "9876", "port of the node.")
+	console := flag.Bool("console_only", false, "Output to console only")
+	logFolder := flag.String("log_folder", "latest", "the folder collecting the logs of this execution")
+	logMaxSize := flag.Int("log_max_size", 100, "the max size in megabytes of the log file before it gets rotated")
+	logRotateCount := flag.Int("log_rotate_count", 0, "the number of rotated logs to keep. If set to 0 rotation is disabled")
+	logRotateMaxAge := flag.Int("log_rotate_max_age", 0, "the maximum number of days to retain old logs. If set to 0 rotation is disabled")
+	keyFile := flag.String("key", "./.bnkey", "the private key file of the bootnode")
+	versionFlag := flag.Bool("version", false, "Output version info")
+	verbosity := flag.Int("verbosity", 5, "Logging verbosity: 0=silent, 1=error, 2=warn, 3=info, 4=debug, 5=detail (default: 5)")
+	logConn := flag.Bool("log_conn", false, "log incoming/outgoing connections")
+	maxConnPerIP := flag.Int("max_conn_per_ip", 10, "max connections number for same ip")
+
 	flag.Parse()
 
-	glogger := log.NewGlogHandler(log.StreamHandler(os.Stderr, log.TerminalFormat(false)))
-	glogger.Verbosity(log.Lvl(*verbosity))
-	glogger.Vmodule(*vmodule)
-	log.Root().SetHandler(glogger)
+	if *versionFlag {
+		printVersion(os.Args[0])
+	}
 
-	natm, err := nat.Parse(*natdesc)
+	// Logging setup
+	utils.SetLogContext(*port, *ip)
+	utils.SetLogVerbosity(log.Lvl(*verbosity))
+	if *console != true {
+		utils.AddLogFile(fmt.Sprintf("%v/bootnode-%v-%v.log", *logFolder, *ip, *port), *logMaxSize, *logRotateCount, *logRotateMaxAge)
+	}
+
+	privKey, _, err := utils.LoadKeyFromFile(*keyFile)
 	if err != nil {
-		utils.Fatalf("-nat: %v", err)
-	}
-	switch {
-	case *genKey != "":
-		nodeKey, err = crypto.GenerateKey()
-		if err != nil {
-			utils.Fatalf("could not generate key: %v", err)
-		}
-		if err = crypto.SaveECDSA(*genKey, nodeKey); err != nil {
-			utils.Fatalf("%v", err)
-		}
-		if !*writeAddr {
-			return
-		}
-	case *nodeKeyFile == "" && *nodeKeyHex == "":
-		utils.Fatalf("Use -nodekey or -nodekeyhex to specify a private key")
-	case *nodeKeyFile != "" && *nodeKeyHex != "":
-		utils.Fatalf("Options -nodekey and -nodekeyhex are mutually exclusive")
-	case *nodeKeyFile != "":
-		if nodeKey, err = crypto.LoadECDSA(*nodeKeyFile); err != nil {
-			utils.Fatalf("-nodekey: %v", err)
-		}
-	case *nodeKeyHex != "":
-		if nodeKey, err = crypto.HexToECDSA(*nodeKeyHex); err != nil {
-			utils.Fatalf("-nodekeyhex: %v", err)
-		}
+		utils.FatalErrMsg(err, "cannot load key from %s", *keyFile)
 	}
 
-	if *writeAddr {
-		fmt.Printf("%x\n", crypto.FromECDSAPub(&nodeKey.PublicKey)[1:])
-		os.Exit(0)
-	}
-
-	var restrictList *netutil.Netlist
-	if *netrestrict != "" {
-		restrictList, err = netutil.ParseNetlist(*netrestrict)
-		if err != nil {
-			utils.Fatalf("-netrestrict: %v", err)
-		}
-	}
-
-	addr, err := net.ResolveUDPAddr("udp", *listenAddr)
+	// For bootstrap nodes, we shall keep .dht file.
+	dataStorePath := fmt.Sprintf(".dht-%s-%s", *ip, *port)
+	selfPeer := p2p.Peer{IP: *ip, Port: *port}
+	host, err := p2p.NewHost(p2p.HostConfig{
+		Self:          &selfPeer,
+		BLSKey:        privKey,
+		BootNodes:     nil, // Boot nodes have no boot nodes :) Will be connected when other nodes joined
+		DataStoreFile: &dataStorePath,
+		MaxConnPerIP:  *maxConnPerIP,
+	})
 	if err != nil {
-		utils.Fatalf("-ResolveUDPAddr: %v", err)
-	}
-	conn, err := net.ListenUDP("udp", addr)
-	if err != nil {
-		utils.Fatalf("-ListenUDP: %v", err)
+		utils.FatalErrMsg(err, "cannot initialize network")
 	}
 
-	realaddr := conn.LocalAddr().(*net.UDPAddr)
-	if natm != nil {
-		if !realaddr.IP.IsLoopback() {
-			go nat.Map(natm, nil, "udp", realaddr.Port, realaddr.Port, "ethereum discovery")
-		}
-		if ext, err := natm.ExternalIP(); err == nil {
-			realaddr = &net.UDPAddr{IP: ext, Port: realaddr.Port}
-		}
-	}
+	fmt.Printf("bootnode BN_MA=%s",
+		fmt.Sprintf("/ip4/%s/tcp/%s/p2p/%s", *ip, *port, host.GetID().Pretty()),
+	)
 
-	printNotice(&nodeKey.PublicKey, *realaddr)
+	host.Start()
 
-	db, _ := enode.OpenDB("")
-	ln := enode.NewLocalNode(db, nodeKey)
-	cfg := discover.Config{
-		PrivateKey:  nodeKey,
-		NetRestrict: restrictList,
-	}
-	if *runv5 {
-		if _, err := discover.ListenV5(conn, ln, cfg); err != nil {
-			utils.Fatalf("%v", err)
-		}
-	} else {
-		if _, err := discover.ListenUDP(conn, ln, cfg); err != nil {
-			utils.Fatalf("%v", err)
-		}
+	if *logConn {
+		host.GetP2PHost().Network().Notify(NewConnLogger(utils.GetLogInstance()))
 	}
 
 	select {}
-}
-
-func printNotice(nodeKey *ecdsa.PublicKey, addr net.UDPAddr) {
-	if addr.IP.IsUnspecified() {
-		addr.IP = net.IP{127, 0, 0, 1}
-	}
-	n := enode.NewV4(nodeKey, addr.IP, 0, addr.Port)
-	fmt.Println(n.URLv4())
-	fmt.Println("Note: you're using cmd/bootnode, a developer tool.")
-	fmt.Println("We recommend using a regular node as bootstrap node for production deployments.")
 }
